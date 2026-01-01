@@ -18,7 +18,7 @@
 </div>
 
 <h2 align="center">
-    <p>BRB: Breaking the Reclustering Barrier</p>
+    <p> Reproduction of BRB: Breaking the Reclustering Barrier</p>
 </h2>
 
 [`Paper`](https://arxiv.org/abs/2411.02275)
@@ -30,7 +30,8 @@
 
 ## Introduction
 
-This is the codebase accompanying our paper on "Breaking the Reclustering Barrier" (BRB). To summarize, BRB prevents early performance plateaus in centroid-based deep clustering by periodically applying a soft reset to the feature encoder with subsequent reclustering. This allows the model to escape local minima and continue learning. We show that BRB significantly improves the performance of centroid-based deep clustering algorithms on various datasets and tasks.
+This is the codebase accompanying my reproduction on "Breaking the Reclustering Barrier" (BRB). To summarize, BRB prevents early performance plateaus in centroid-based deep clustering by periodically applying a soft reset to the feature encoder with subsequent reclustering. This allows the model to escape local minima and continue learning. The paper show that BRB significantly improves the performance of centroid-based deep clustering algorithms on various datasets and tasks.
+My work extends this repository by successfully replicating the original baseline results and conducting further ablation studies. Specifically, I explore the generalization of the BRB mechanism to distribution-based clustering (replacing K-means with EM) and evaluate the sensitivity of the soft-reset process to different pre-training configurations.
 
 ## Algorithms and data sets
 

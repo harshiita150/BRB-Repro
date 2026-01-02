@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", message=".*Deterministic behavior.*")
 import random
 import time
 from pathlib import Path
@@ -302,7 +304,8 @@ def train_dbscan(args: Args) -> None:
                 print(f">> Period {period+1} Result | Found K: {n_clusters_found}")
             metrics_log.append({
                 'period': period + 1,
-                'acc': acc if Y_true is not None else 0.0,
+                'acc_pure': acc_pure if Y_true is not None else 0.0,
+                'acc_all': acc_all if Y_true is not None else 0.0,
                 'n_clusters': n_clusters_found,
                 'n_noise': np.sum(dbscan_labels == -1)
             })

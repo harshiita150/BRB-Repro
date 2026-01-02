@@ -46,26 +46,28 @@ class DeepDBSCANWrapper(nn.Module):
         self.classifier = nn.Linear(feature_dim, new_k).to(device)
 
 def apply_soft_reset(model, interpolation_factor):
-    """Perturbs weights using the interpolation factor."""
-    for name, param in model.encoder.named_parameters():
+    """BRB Mechanism: Perturbs weights."""
+    # Use .module if the model is wrapped in DataParallel
+    target_model = model.module if isinstance(model, nn.DataParallel) else model
+    for name, param in target_model.encoder.named_parameters():
         if 'weight' in name:
             noise = (torch.randn_like(param) * 0.02).to(param.device)
             param.data = interpolation_factor * param.data + (1 - interpolation_factor) * noise
 
 # --- EXPERIMENT ENGINE ---
 def run_experiment(args):
-    # GPU CONFIGURATION FIX
+    # FIXED: Handling "all" by bypassing restrictive utility call
     if torch.cuda.is_available():
-        set_cuda_configuration(args.experiment_gpu) 
+        if args.experiment_gpu != 'all':
+            set_cuda_configuration(args.experiment_gpu) 
         device = torch.device("cuda")
+        print(f"🚀 Using GPU(s): {torch.cuda.device_count()} available")
     else:
         device = torch.device("cpu")
 
     # AUTO-CALCULATE PERIODS
-    # num_periods = total_epochs / reset_interval
     num_periods = args.clustering_epochs // args.brb_reset_interval
-    print(f"📊 Total Epochs: {args.clustering_epochs} | Interval: {args.brb_reset_interval} | Calculated Periods: {num_periods}")
-
+    
     repo_args = Args()
     repo_args.dataset = args.dataset_name
     repo_args.batch_size = args.batch_size
@@ -80,6 +82,12 @@ def run_experiment(args):
         
     feature_dim = 128 
     model = DeepDBSCANWrapper(base, feature_dim).to(device)
+    
+    # MULTI-GPU SUPPORT: Wrap model if "all" is used and multiple GPUs exist
+    if torch.cuda.device_count() > 1 and args.experiment_gpu == 'all':
+        print(f"🔗 Multi-GPU detected. Parallelizing across {torch.cuda.device_count()} cards.")
+        model = nn.DataParallel(model)
+
     results_log = []
 
     for p in range(num_periods):
@@ -106,7 +114,12 @@ def run_experiment(args):
             print("Cluster collapse. Increase --dbscan-eps.")
             continue
 
-        model.update_head(new_k, feature_dim)
+        # Update the linear head for the new cluster count
+        if isinstance(model, nn.DataParallel):
+            model.module.update_head(new_k, feature_dim)
+        else:
+            model.update_head(new_k, feature_dim)
+            
         optimizer = optim.Adam(model.parameters(), lr=args.dc_optimizer_lr)
         criterion = nn.CrossEntropyLoss()
 
@@ -122,26 +135,21 @@ def run_experiment(args):
 
         acc = cluster_acc(Y_true, db.labels_)
         ari = metrics.adjusted_rand_score(Y_true, db.labels_)
-        print(f">> ACC: {acc:.4f} | ARI: {ari:.4f} | Found K: {new_k}")
+        print(f">> ACC: {acc:.4f} | ARI: {ari:.4f} | K: {new_k}")
         results_log.append({'period': p, 'acc': acc, 'ari': ari})
 
     pd.DataFrame(results_log).to_csv(f"results_{args.dataset_name}.csv", index=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Parameters matching your requested style
     parser.add_argument('--dataset-name', type=str, default='mnist', dest='dataset_name')
     parser.add_argument('--experiment.gpu', type=str, default='all', dest='experiment_gpu')
     parser.add_argument('--dc-algorithm', type=str, default='dec', dest='dc_algorithm')
     parser.add_argument('--batch-size', type=int, default=256, dest='batch_size')
     parser.add_argument('--dc-optimizer.lr', type=float, default=0.001, dest='dc_optimizer_lr')
-    
-    # BRB & Epoch Control
     parser.add_argument('--clustering-epochs', type=int, default=100, dest='clustering_epochs')
     parser.add_argument('--brb.reset-interval', type=int, default=20, dest='brb_reset_interval')
     parser.add_argument('--brb.reset-interpolation-factor', type=float, default=0.8, dest='brb_reset_interpolation_factor')
-    
-    # DBSCAN 
     parser.add_argument('--dbscan-eps', type=float, default=0.4, dest='dbscan_eps')
     parser.add_argument('--dbscan-min-samples', type=int, default=10, dest='dbscan_min_samples')
     

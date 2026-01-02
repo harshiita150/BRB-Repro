@@ -46,32 +46,31 @@ class DeepDBSCANWrapper(nn.Module):
         self.classifier = nn.Linear(feature_dim, new_k).to(device)
 
 def apply_soft_reset(model, interpolation_factor):
-    """
-    BRB Soft Reset:
-    New Weights = (Factor * Old Weights) + ((1 - Factor) * Noise)
-    """
+    """Perturbs weights using the interpolation factor."""
     for name, param in model.encoder.named_parameters():
         if 'weight' in name:
             noise = (torch.randn_like(param) * 0.02).to(param.device)
-            # 0.8 interpolation factor means 80% old weights, 20% noise
             param.data = interpolation_factor * param.data + (1 - interpolation_factor) * noise
 
 # --- EXPERIMENT ENGINE ---
 def run_experiment(args):
-    # FIXED: Uses the dot-notation parameter for GPU
+    # GPU CONFIGURATION FIX
     if torch.cuda.is_available():
         set_cuda_configuration(args.experiment_gpu) 
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
-    # Sync with repo's native dataloader
+    # AUTO-CALCULATE PERIODS
+    # num_periods = total_epochs / reset_interval
+    num_periods = args.clustering_epochs // args.brb_reset_interval
+    print(f"📊 Total Epochs: {args.clustering_epochs} | Interval: {args.brb_reset_interval} | Calculated Periods: {num_periods}")
+
     repo_args = Args()
     repo_args.dataset = args.dataset_name
     repo_args.batch_size = args.batch_size
     train_loader, _, _ = get_train_eval_test_dataloaders(repo_args)
     
-    # Model Selection
     if args.dc_algorithm == 'dec':
         base = BRB_DEC()
     elif args.dc_algorithm == 'idec':
@@ -83,10 +82,8 @@ def run_experiment(args):
     model = DeepDBSCANWrapper(base, feature_dim).to(device)
     results_log = []
 
-    # Iterative Reclustering Loop
-    for p in range(args.num_periods):
-        print(f"\n--- {args.dataset_name.upper()} | Period {p+1}/{args.num_periods} ---")
-        
+    for p in range(num_periods):
+        print(f"\n--- Period {p+1}/{num_periods} ---")
         if p > 0:
             apply_soft_reset(model, args.brb_reset_interpolation_factor)
 
@@ -101,13 +98,12 @@ def run_experiment(args):
         X_feats = np.concatenate(all_z)
         Y_true = np.concatenate(all_y)
 
-        # Clustering with names matching previous request style
         db = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(X_feats)
         labels = torch.tensor(db.labels_).to(device)
         new_k = len(set(db.labels_) - {-1})
 
         if new_k < 2:
-            print("Cluster collapse detected. Adjust --dbscan-eps.")
+            print("Cluster collapse. Increase --dbscan-eps.")
             continue
 
         model.update_head(new_k, feature_dim)
@@ -122,33 +118,30 @@ def run_experiment(args):
                 if mask.any():
                     logits, _ = model(images.to(device))
                     loss = criterion(logits[mask], batch_labels[mask])
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                    optimizer.zero_grad(); loss.backward(); optimizer.step()
 
         acc = cluster_acc(Y_true, db.labels_)
         ari = metrics.adjusted_rand_score(Y_true, db.labels_)
-        print(f">> Final Period ACC: {acc:.4f} | ARI: {ari:.4f} | K: {new_k}")
+        print(f">> ACC: {acc:.4f} | ARI: {ari:.4f} | Found K: {new_k}")
         results_log.append({'period': p, 'acc': acc, 'ari': ari})
 
     pd.DataFrame(results_log).to_csv(f"results_{args.dataset_name}.csv", index=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    
-    # RENAME PARAMETERS TO MATCH PREVIOUS COMMANDS
+    # Parameters matching your requested style
     parser.add_argument('--dataset-name', type=str, default='mnist', dest='dataset_name')
     parser.add_argument('--experiment.gpu', type=str, default='all', dest='experiment_gpu')
     parser.add_argument('--dc-algorithm', type=str, default='dec', dest='dc_algorithm')
     parser.add_argument('--batch-size', type=int, default=256, dest='batch_size')
     parser.add_argument('--dc-optimizer.lr', type=float, default=0.001, dest='dc_optimizer_lr')
     
-    # BRB PARAMETERS (Updated names)
-    parser.add_argument('--brb.reset-interval', type=int, default=10, dest='brb_reset_interval')
-    parser.add_argument('--brb.reset-interpolation-factor', type=float, default=0.9, dest='brb_reset_interpolation_factor')
-    parser.add_argument('--num-periods', type=int, default=5, dest='num_periods')
+    # BRB & Epoch Control
+    parser.add_argument('--clustering-epochs', type=int, default=100, dest='clustering_epochs')
+    parser.add_argument('--brb.reset-interval', type=int, default=20, dest='brb_reset_interval')
+    parser.add_argument('--brb.reset-interpolation-factor', type=float, default=0.8, dest='brb_reset_interpolation_factor')
     
-    # DBSCAN SPECIFIC
+    # DBSCAN 
     parser.add_argument('--dbscan-eps', type=float, default=0.4, dest='dbscan_eps')
     parser.add_argument('--dbscan-min-samples', type=int, default=10, dest='dbscan_min_samples')
     

@@ -342,6 +342,8 @@ def train_dbscan(args: Args) -> None:
                 return_labels=False,
                 track_silhouette=True,
                 track_purity=True,
+                track_voronoi=False,         
+                track_uncertainty_plot=False,
                 device=device,
             )
             

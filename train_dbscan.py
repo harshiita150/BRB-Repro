@@ -11,6 +11,8 @@ from shortuuid import uuid
 from threadpoolctl import threadpool_limits
 from sklearn.cluster import DBSCAN
 from scipy.optimize import linear_sum_assignment
+from sklearn.metrics import normalized_mutual_info_score as nmi_score
+from sklearn.metrics import adjusted_rand_score as ari_score
 
 import wandb
 from config.base_config import Args
@@ -39,6 +41,22 @@ def cluster_acc(y_true, y_pred):
         w[y_p[i], y_t[i]] += 1
     ind = np.array(linear_sum_assignment(w.max() - w)).T
     return sum([w[i, j] for i, j in ind]) * 1.0 / y_p.size
+
+def cluster_acc_all(y_true, y_pred):
+    """Calculates accuracy where noise (-1) is treated as an incorrect prediction."""
+    y_true = y_true.astype(np.int64)
+    y_pred_mapped = y_pred.copy()
+    
+    noise_id = max(y_true.max(), y_pred.max()) + 1
+    y_pred_mapped[y_pred == -1] = noise_id
+    
+    D = max(y_pred_mapped.max(), y_true.max()) + 1
+    w = np.zeros((D, D), dtype=np.int64)
+    for i in range(y_true.size):
+        w[y_pred_mapped[i], y_true[i]] += 1
+    
+    ind = np.array(linear_sum_assignment(w.max() - w)).T
+    return sum([w[i, j] for i, j in ind]) * 1.0 / y_true.size
 
 
 # --- MODEL WRAPPER FOR DBSCAN ---
@@ -252,20 +270,34 @@ def train_dbscan(args: Args) -> None:
                 
                 # Log metrics periodically
                 if epoch % args.experiment.cluster_log_interval == 0 and run is not None and Y_true is not None:
-                    acc = cluster_acc(Y_true, dbscan_labels)
+                    acc_pure = cluster_acc(Y_true, dbscan_labels) # Acc on clustered points only
+                    acc_all = cluster_acc_all(Y_true, dbscan_labels) # Acc on entire dataset
+                    nmi = nmi_score(Y_true, dbscan_labels)
+                    ari = ari_score(Y_true, dbscan_labels)
+                    
+                    n_noise = np.sum(dbscan_labels == -1)
+                    coverage = (len(dbscan_labels) - n_noise) / len(dbscan_labels)
+
                     log_dict = {
                         f"Training/Period": period + 1,
                         f"Training/Epoch": epoch,
                         f"Training/Loss": epoch_loss / max(n_batches, 1),
-                        f"Training/ACC": acc,
+                        f"Training/ACC_pure": acc_pure,
+                        f"Training/ACC_all": acc_all,
+                        f"Training/NMI": nmi,
+                        f"Training/ARI": ari,
+                        f"Training/Coverage": coverage,
                         f"Training/N_Clusters": n_clusters_found,
+                        f"Training/N_Noise": int(n_noise),
                     }
                     run.log(log_dict)
             
             # Evaluate at end of period
             if Y_true is not None:
-                acc = cluster_acc(Y_true, dbscan_labels)
-                print(f">> Period {period+1} Result | ACC: {acc:.4f} | Found K: {n_clusters_found}")
+                acc_all = cluster_acc_all(Y_true, dbscan_labels)
+                nmi = nmi_score(Y_true, dbscan_labels)
+                n_noise = np.sum(dbscan_labels == -1)
+                print(f">> Period {period+1} Result | ACC-All: {acc_all:.4f} | NMI: {nmi:.4f} | K: {n_clusters_found} | Noise: {n_noise} pts")
             else:
                 print(f">> Period {period+1} Result | Found K: {n_clusters_found}")
             metrics_log.append({

@@ -194,15 +194,21 @@ def train_dbscan(args: Args) -> None:
             
             # Extract features
             model.eval()
-            all_z, all_y = [], []
+            all_z, all_indices = [], []
             with torch.no_grad():
-                for x, y in dc_train_wA_dl:
-                    _, z = model(x.to(device))
+                for batch in dc_train_wA_dl:
+                    # Dataloader returns (index, data)
+                    # batch[0] = indices, batch[1] = data
+                    batch_indices = batch[0].numpy()
+                    batch_data = batch[1].to(device)
+                    _, z = model(batch_data)
                     all_z.append(z.cpu().numpy())
-                    all_y.append(y.numpy())
+                    all_indices.append(batch_indices)
             
             X_feats = np.concatenate(all_z)
-            Y_true = np.concatenate(all_y)
+            all_indices = np.concatenate(all_indices)
+            # Get ground truth labels using indices
+            Y_true = labels[all_indices] if labels is not None else None
             
             # Run DBSCAN clustering
             db = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(X_feats)
@@ -224,17 +230,20 @@ def train_dbscan(args: Args) -> None:
                 epoch_loss = 0.0
                 n_batches = 0
                 
-                for batch_idx, (images, _) in enumerate(dc_train_dl):
-                    # Get corresponding DBSCAN labels for this batch
-                    start_idx = batch_idx * args.batch_size
-                    end_idx = min(start_idx + args.batch_size, len(dbscan_labels))
-                    batch_labels = torch.tensor(dbscan_labels[start_idx:end_idx], dtype=torch.long).to(device)
+                for batch_idx, batch in enumerate(dc_train_dl):
+                    # Dataloader returns (index, data, labels)
+                    # batch[0] = indices, batch[1] = data, batch[2] = labels (if provided)
+                    batch_data = batch[1].to(device)
+                    batch_indices = batch[0].numpy()
+                    
+                    # Get corresponding DBSCAN labels for this batch using indices
+                    batch_dbscan_labels = torch.tensor(dbscan_labels[batch_indices], dtype=torch.long).to(device)
                     
                     # Only train on non-noise points
-                    mask = batch_labels != -1
+                    mask = batch_dbscan_labels != -1
                     if mask.any():
-                        logits, _ = model(images.to(device))
-                        loss = criterion(logits[mask], batch_labels[mask])
+                        logits, _ = model(batch_data)
+                        loss = criterion(logits[mask], batch_dbscan_labels[mask])
                         optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
@@ -242,7 +251,7 @@ def train_dbscan(args: Args) -> None:
                         n_batches += 1
                 
                 # Log metrics periodically
-                if epoch % args.experiment.cluster_log_interval == 0 and run is not None:
+                if epoch % args.experiment.cluster_log_interval == 0 and run is not None and Y_true is not None:
                     acc = cluster_acc(Y_true, dbscan_labels)
                     log_dict = {
                         f"Training/Period": period + 1,
@@ -254,11 +263,14 @@ def train_dbscan(args: Args) -> None:
                     run.log(log_dict)
             
             # Evaluate at end of period
-            acc = cluster_acc(Y_true, dbscan_labels)
-            print(f">> Period {period+1} Result | ACC: {acc:.4f} | Found K: {n_clusters_found}")
+            if Y_true is not None:
+                acc = cluster_acc(Y_true, dbscan_labels)
+                print(f">> Period {period+1} Result | ACC: {acc:.4f} | Found K: {n_clusters_found}")
+            else:
+                print(f">> Period {period+1} Result | Found K: {n_clusters_found}")
             metrics_log.append({
                 'period': period + 1,
-                'acc': acc,
+                'acc': acc if Y_true is not None else 0.0,
                 'n_clusters': n_clusters_found,
                 'n_noise': np.sum(dbscan_labels == -1)
             })

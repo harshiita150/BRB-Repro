@@ -10,17 +10,15 @@ from scipy.optimize import linear_sum_assignment
 import os
 
 # --- REPO-SPECIFIC IMPORTS ---
-# These imports match your 'src' and 'config' folder structures
 from src.datasets.dataset_init import get_train_eval_test_dataloaders
 from src.deep import BRB_DEC, BRB_IDEC, BRB_DCN
 from src.training.utils import set_cuda_configuration
 from config.base_config import Args
 
-# --- CLUSTERING ACCURACY (ACC) UTILITY ---
+# --- CLUSTERING ACCURACY (ACC) ---
 def cluster_acc(y_true, y_pred):
-    """Calculates clustering accuracy using Hungarian matching."""
     y_true = y_true.astype(np.int64)
-    mask = y_pred != -1 # Mask out DBSCAN noise
+    mask = y_pred != -1 
     if not np.any(mask): return 0.0
     y_p, y_t = y_pred[mask], y_true[mask]
     D = max(y_p.max(), y_t.max()) + 1
@@ -30,69 +28,68 @@ def cluster_acc(y_true, y_pred):
     ind = np.array(linear_sum_assignment(w.max() - w)).T
     return sum([w[i, j] for i, j in ind]) * 1.0 / y_p.size
 
-# --- DEEP DBSCAN MODEL WRAPPER ---
+# --- MODEL WRAPPER ---
 class DeepDBSCANWrapper(nn.Module):
     def __init__(self, base_model, feature_dim):
         super().__init__()
         self.encoder = base_model.encoder 
-        self.classifier = nn.Linear(feature_dim, 10) # Initial head
+        self.classifier = nn.Linear(feature_dim, 10) 
 
     def forward(self, x):
         z = self.encoder(x)
-        # Normalization is essential for DBSCAN epsilon stability
         z_norm = nn.functional.normalize(z, p=2, dim=1)
         logits = self.classifier(z_norm)
         return logits, z_norm
 
     def update_head(self, new_k, feature_dim):
-        """Updates the linear head to match the number of clusters DBSCAN found."""
         device = next(self.parameters()).device
         self.classifier = nn.Linear(feature_dim, new_k).to(device)
 
-def apply_soft_reset(model, alpha):
-    """BRB Mechanism: Perturbs encoder weights to prevent stagnation."""
+def apply_soft_reset(model, interpolation_factor):
+    """
+    BRB Soft Reset:
+    New Weights = (Factor * Old Weights) + ((1 - Factor) * Noise)
+    """
     for name, param in model.encoder.named_parameters():
         if 'weight' in name:
             noise = (torch.randn_like(param) * 0.02).to(param.device)
-            param.data = (1 - alpha) * param.data + alpha * noise
+            # 0.8 interpolation factor means 80% old weights, 20% noise
+            param.data = interpolation_factor * param.data + (1 - interpolation_factor) * noise
 
-# --- MAIN EXPERIMENT ENGINE ---
-def run_master_experiment(custom_args):
-    # FLEXIBLE DEVICE SELECTION
+# --- EXPERIMENT ENGINE ---
+def run_experiment(args):
+    # FIXED: Uses the dot-notation parameter for GPU
     if torch.cuda.is_available():
-        set_cuda_configuration() # Call repo utility
+        set_cuda_configuration(args.experiment_gpu) 
         device = torch.device("cuda")
-        print(f"🚀 Running on GPU: {torch.cuda.get_device_name(0)}")
     else:
         device = torch.device("cpu")
-        print("💻 GPU not detected. Running on CPU (Expect slower performance).")
 
-    # LOAD DATASET (Supports all 8 repo datasets)
+    # Sync with repo's native dataloader
     repo_args = Args()
-    repo_args.dataset = custom_args.dataset
-    repo_args.batch_size = custom_args.batch_size
+    repo_args.dataset = args.dataset_name
+    repo_args.batch_size = args.batch_size
     train_loader, _, _ = get_train_eval_test_dataloaders(repo_args)
     
-    # SELECT MODEL
-    if custom_args.model_type == 'dec':
+    # Model Selection
+    if args.dc_algorithm == 'dec':
         base = BRB_DEC()
-    elif custom_args.model_type == 'idec':
+    elif args.dc_algorithm == 'idec':
         base = BRB_IDEC()
     else:
         base = BRB_DCN()
         
-    feature_dim = 128 # Standard latent dimension for your repo
+    feature_dim = 128 
     model = DeepDBSCANWrapper(base, feature_dim).to(device)
-    
     results_log = []
 
-    for p in range(custom_args.periods):
-        print(f"\n--- {custom_args.dataset.upper()} | Period {p+1}/{custom_args.periods} ---")
+    # Iterative Reclustering Loop
+    for p in range(args.num_periods):
+        print(f"\n--- {args.dataset_name.upper()} | Period {p+1}/{args.num_periods} ---")
         
         if p > 0:
-            apply_soft_reset(model, custom_args.alpha)
+            apply_soft_reset(model, args.brb_reset_interpolation_factor)
 
-        # 1. GENERATE LATENT FEATURES
         model.eval()
         all_z, all_y = [], []
         with torch.no_grad():
@@ -104,28 +101,24 @@ def run_master_experiment(custom_args):
         X_feats = np.concatenate(all_z)
         Y_true = np.concatenate(all_y)
 
-        # 2. DBSCAN RECLUSTERING
-        print(f"Clustering with DBSCAN (eps={custom_args.eps})...")
-        db = DBSCAN(eps=custom_args.eps, min_samples=custom_args.min_samples, n_jobs=-1).fit(X_feats)
+        # Clustering with names matching previous request style
+        db = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(X_feats)
         labels = torch.tensor(db.labels_).to(device)
         new_k = len(set(db.labels_) - {-1})
-        print(f"Found {new_k} clusters | Noise: {np.mean(db.labels_ == -1):.1%}")
 
         if new_k < 2:
-            print("Cluster collapse (found < 2 clusters). Try adjusting --eps.")
+            print("Cluster collapse detected. Adjust --dbscan-eps.")
             continue
 
         model.update_head(new_k, feature_dim)
-        optimizer = optim.Adam(model.parameters(), lr=custom_args.lr)
+        optimizer = optim.Adam(model.parameters(), lr=args.dc_optimizer_lr)
         criterion = nn.CrossEntropyLoss()
 
-        # 3. FINE-TUNING ON PSEUDO-LABELS
         model.train()
-        for epoch in range(custom_args.epochs):
+        for epoch in range(args.brb_reset_interval):
             for i, (images, _) in enumerate(train_loader):
-                batch_labels = labels[i*custom_args.batch_size : (i+1)*custom_args.batch_size]
-                mask = batch_labels != -1 # Ignore DBSCAN noise
-                
+                batch_labels = labels[i*args.batch_size : (i+1)*args.batch_size]
+                mask = batch_labels != -1
                 if mask.any():
                     logits, _ = model(images.to(device))
                     loss = criterion(logits[mask], batch_labels[mask])
@@ -133,30 +126,31 @@ def run_master_experiment(custom_args):
                     loss.backward()
                     optimizer.step()
 
-        # 4. PERIOD EVALUATION
         acc = cluster_acc(Y_true, db.labels_)
         ari = metrics.adjusted_rand_score(Y_true, db.labels_)
-        print(f">> Period ACC: {acc:.4f} | ARI: {ari:.4f}")
-        results_log.append({'dataset': custom_args.dataset, 'period': p, 'acc': acc, 'ari': ari, 'k': new_k})
+        print(f">> Final Period ACC: {acc:.4f} | ARI: {ari:.4f} | K: {new_k}")
+        results_log.append({'period': p, 'acc': acc, 'ari': ari})
 
-    # SAVE RESULTS
-    output_name = f"results_{custom_args.dataset}_{custom_args.model_type}.csv"
-    pd.DataFrame(results_log).to_csv(output_name, index=False)
-    print(f"\n✅ Results saved to {output_name}")
+    pd.DataFrame(results_log).to_csv(f"results_{args.dataset_name}.csv", index=False)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Deep DBSCAN + BRB Master Experiment")
-    # All datasets from repo list
-    parser.add_argument('--dataset', type=str, default='mnist', 
-                        choices=['mnist', 'fmnist', 'kmnist', 'usps', 'gtsrb', 'optdigits', 'cifar10', 'cifar100-20'])
-    parser.add_argument('--model_type', type=str, default='dec', choices=['dec', 'idec', 'dcn'])
-    parser.add_argument('--eps', type=float, default=0.4, help="DBSCAN neighborhood distance.")
-    parser.add_argument('--min_samples', type=int, default=10, help="Min points for a cluster.")
-    parser.add_argument('--periods', type=int, default=5, help="Number of BRB soft-reset cycles.")
-    parser.add_argument('--epochs', type=int, default=10, help="Training epochs per period.")
-    parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--alpha', type=float, default=0.1, help="Soft reset strength.")
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser = argparse.ArgumentParser()
+    
+    # RENAME PARAMETERS TO MATCH PREVIOUS COMMANDS
+    parser.add_argument('--dataset-name', type=str, default='mnist', dest='dataset_name')
+    parser.add_argument('--experiment.gpu', type=str, default='all', dest='experiment_gpu')
+    parser.add_argument('--dc-algorithm', type=str, default='dec', dest='dc_algorithm')
+    parser.add_argument('--batch-size', type=int, default=256, dest='batch_size')
+    parser.add_argument('--dc-optimizer.lr', type=float, default=0.001, dest='dc_optimizer_lr')
+    
+    # BRB PARAMETERS (Updated names)
+    parser.add_argument('--brb.reset-interval', type=int, default=10, dest='brb_reset_interval')
+    parser.add_argument('--brb.reset-interpolation-factor', type=float, default=0.9, dest='brb_reset_interpolation_factor')
+    parser.add_argument('--num-periods', type=int, default=5, dest='num_periods')
+    
+    # DBSCAN SPECIFIC
+    parser.add_argument('--dbscan-eps', type=float, default=0.4, dest='dbscan_eps')
+    parser.add_argument('--dbscan-min-samples', type=int, default=10, dest='dbscan_min_samples')
     
     args = parser.parse_args()
-    run_master_experiment(args)
+    run_experiment(args)

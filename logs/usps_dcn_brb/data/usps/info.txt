@@ -1,3 +1,0 @@
-This directory was created by the ClustPy python package to store real world data sets.
-The default directory is '[USER]/Downloads/clustpy_datafiles' and can be changed with the 'downloads_path' parameter when loading a data set.
-Alternatively, a global python environment variable for the path can be defined with os.environ['CLUSTPY_DATA'] = 'PATH'.

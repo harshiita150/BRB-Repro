@@ -288,28 +288,35 @@ def train_dbscan(args: Args) -> None:
                 cluster_centers.append(cluster_points.mean(axis=0))
         cluster_centers = np.array(cluster_centers) if cluster_centers else np.zeros((1, test_embeddings.shape[1]))
         
-        # Evaluate final performance
-        metrics, _ = evaluate_deep_clustering(
-            cluster_centers=cluster_centers,
-            model=ae.to(device),
-            dataloader=test_dl,
-            labels=test_labels,
-            old_labels=None,
-            loss_fn=torch.nn.MSELoss(),
-            metrics_dict=None,
-            return_labels=False,
-            track_silhouette=True,
-            track_purity=True,
-            device=device,
-            track_voronoi=args.experiment.track_voronoi,
-            track_uncertainty_plot=args.experiment.track_uncertainty_plot,
-        )
+        n_test_clusters = len(cluster_centers)
         
-        # Log final scores on test set
-        if run is not None:
-            metric_dict = {f"Clustering test metrics/{k}": v[-1] for k, v in metrics.items() if "Change" not in k}
-            metric_dict["Clustering epoch"] = args.clustering_epochs
-            run.log(metric_dict)
+        # Only evaluate if we have at least 2 clusters (needed for uncertainty score and other metrics)
+        if n_test_clusters >= 2:
+            # Evaluate final performance
+            metrics, _ = evaluate_deep_clustering(
+                cluster_centers=cluster_centers,
+                model=ae.to(device),
+                dataloader=test_dl,
+                labels=test_labels,
+                old_labels=None,
+                loss_fn=torch.nn.MSELoss(),
+                metrics_dict=None,
+                return_labels=False,
+                track_silhouette=True,
+                track_purity=True,
+                device=device,
+                track_voronoi=args.experiment.track_voronoi,
+                track_uncertainty_plot=args.experiment.track_uncertainty_plot,
+            )
+            
+            # Log final scores on test set
+            if run is not None:
+                metric_dict = {f"Clustering test metrics/{k}": v[-1] for k, v in metrics.items() if "Change" not in k}
+                metric_dict["Clustering epoch"] = args.clustering_epochs
+                run.log(metric_dict)
+        else:
+            print(f"Warning: DBSCAN found only {n_test_clusters} cluster(s) on test set. Skipping evaluation (needs at least 2 clusters).")
+            print(f"Try adjusting --dbscan-eps (currently {args.dbscan_eps}) or --dbscan-min-samples (currently {args.dbscan_min_samples})")
         
         ae.to("cpu")
         

@@ -109,6 +109,12 @@ class Args:
     # Crop size used for torchvision.transforms.RandomResizedCrop. This is only used for color images
     crop_size: int = 32
 
+    # DBSCAN parameters (for train_dbscan.py)
+    # DBSCAN eps parameter (maximum distance between samples in the same neighborhood)
+    dbscan_eps: float = 0.5
+    # DBSCAN min_samples parameter (minimum number of samples in a neighborhood)
+    dbscan_min_samples: int = 10
+
     def __post_init__(self):
         """Set debug parameters if debug mode is enabled."""
 

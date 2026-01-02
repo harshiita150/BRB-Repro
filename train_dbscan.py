@@ -302,36 +302,38 @@ def train_dbscan(args: Args) -> None:
                     n_noise = np.sum(dbscan_labels == -1)
                     print(f">> Period {period+1} TRAIN | ACC: {train_acc:.4f} | NMI: {train_nmi:.4f} | ARI: {train_ari:.4f} | K: {n_clusters_found} | Noise: {int(n_noise)}")
                 
-                test_embeddings = encode_batchwise(test_dl, ae, device)
-                db_test = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(test_embeddings)
                 
-                test_pred = db_test.labels_
-                n_test_k = len(set(test_pred) - {-1})
+            test_embeddings = encode_batchwise(test_dl, ae, device)
+            db_test = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(test_embeddings)
                 
-                t_acc = cluster_acc_all(test_labels, test_pred)
-                t_nmi = nmi_score(test_labels, test_pred)
-                t_ari = ari_score(test_labels, test_pred)
+            test_pred = db_test.labels_
+            n_test_k = len(set(test_pred) - {-1})
                 
-                print(f">> Period {period+1} TEST  | ACC: {t_acc:.4f} | NMI: {t_nmi:.4f} | ARI: {t_ari:.4f} | K: {n_test_k}")
-                print("-" * 80)
+            t_acc = cluster_acc_all(test_labels, test_pred)
+            t_nmi = nmi_score(test_labels, test_pred)
+            t_ari = ari_score(test_labels, test_pred)
+                
+            print(f">> Period {period+1} TEST  | ACC: {t_acc:.4f} | NMI: {t_nmi:.4f} | ARI: {t_ari:.4f} | K: {n_test_k}")
+            print("-" * 80)
 
-                # Log both to WandB
-                if run is not None:
-                    run.log({
-                        "Period": period + 1,
-                        "Train/ACC": train_acc if Y_true is not None else 0,
-                        "Train/ARI": train_ari if Y_true is not None else 0,
-                        "Test/ACC": t_acc,
-                        "Test/ARI": t_ari,
-                        "Test/N_Clusters": n_test_k
-                    })
+            # Log to WandB
+            if run is not None:
+                run.log({
+                    "Period": period + 1,
+                    "Train/ACC": train_acc if Y_true is not None else 0,
+                    "Train/ARI": train_ari if Y_true is not None else 0,
+                    "Test/ACC": t_acc,
+                    "Test/ARI": t_ari,
+                    "Test/N_Clusters": n_test_k
+                })
 
+            # Store metrics for internal logging
             metrics_log.append({
                 'period': period + 1,
                 'train_ari': train_ari if Y_true is not None else 0,
-                'test_ari': t_ari,
-                'test_acc': t_acc
+                'test_ari': t_ari
             })
+            
             model.train()
         
 if __name__ == "__main__":

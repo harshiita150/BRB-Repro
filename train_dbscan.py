@@ -298,36 +298,39 @@ def train_dbscan(args: Args) -> None:
             if Y_true is not None:
                 acc_all = cluster_acc_all(Y_true, dbscan_labels)
                 nmi = nmi_score(Y_true, dbscan_labels)
+                ari = ari_score(Y_true, dbscan_labels)
                 n_noise = np.sum(dbscan_labels == -1)
-                print(f">> Period {period+1} Result | ACC-All: {acc_all:.4f} | NMI: {nmi:.4f} | K: {n_clusters_found} | Noise: {n_noise} pts")
+                print(f">> Period {period+1} Result | ACC-All: {acc_all:.4f} | NMI: {nmi:.4f} | ARI: {ari:.4f} | K: {n_clusters_found} | Noise: {n_noise} pts")
             else:
+                acc_all, acc_pure, ari, n_noise = 0.0, 0.0, 0.0, 0
                 print(f">> Period {period+1} Result | Found K: {n_clusters_found}")
+
             metrics_log.append({
                 'period': period + 1,
-                'acc_pure': acc_pure if Y_true is not None else 0.0,
-                'acc_all': acc_all if Y_true is not None else 0.0,
+                'acc_pure': acc_pure,
+                'acc_all': acc_all,
+                'ari': ari,
                 'n_clusters': n_clusters_found,
-                'n_noise': np.sum(dbscan_labels == -1)
+                'n_noise': n_noise
             })
         
         # Final evaluation on test set
+        print("\n--- Running Final Test Set Evaluation ---")
         model.eval()
         test_embeddings = encode_batchwise(test_dl, ae, device)
+        
         db_test = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(test_embeddings)
+        n_test_clusters = len(set(db_test.labels_) - {-1})
         
-        # For evaluation, we need cluster centers - use centroids of DBSCAN clusters
-        cluster_centers = []
-        for cluster_id in set(db_test.labels_) - {-1}:
-            cluster_points = test_embeddings[db_test.labels_ == cluster_id]
-            if len(cluster_points) > 0:
-                cluster_centers.append(cluster_points.mean(axis=0))
-        cluster_centers = np.array(cluster_centers) if cluster_centers else np.zeros((1, test_embeddings.shape[1]))
-        
-        n_test_clusters = len(cluster_centers)
-        
-        # Only evaluate if we have at least 2 clusters (needed for uncertainty score and other metrics)
         if n_test_clusters >= 2:
-            # Evaluate final performance
+            # Calculate centers for the evaluation function
+            cluster_centers = []
+            for cluster_id in set(db_test.labels_) - {-1}:
+                cluster_points = test_embeddings[db_test.labels_ == cluster_id]
+                cluster_centers.append(cluster_points.mean(axis=0))
+            cluster_centers = np.array(cluster_centers)
+
+            # Run deep evaluation (this calculates NMI, ARI, Accuracy, etc.)
             metrics, _ = evaluate_deep_clustering(
                 cluster_centers=cluster_centers,
                 model=ae.to(device),
@@ -340,18 +343,24 @@ def train_dbscan(args: Args) -> None:
                 track_silhouette=True,
                 track_purity=True,
                 device=device,
-                track_voronoi=args.experiment.track_voronoi,
-                track_uncertainty_plot=args.experiment.track_uncertainty_plot,
             )
             
-            # Log final scores on test set
+            # --- PRINT FINAL TEST RESULTS TO CONSOLE ---
+            print("\n" + "="*40)
+            print(f"FINAL TEST SET PERFORMANCE (K={n_test_clusters})")
+            print("-" * 40)
+            for metric_name, values in metrics.items():
+                if "Change" not in metric_name:
+                    # This will show Accuracy, NMI, ARI, and Purity
+                    print(f"{metric_name:25}: {values[-1]:.4f}")
+            print("="*40 + "\n")
+
             if run is not None:
                 metric_dict = {f"Clustering test metrics/{k}": v[-1] for k, v in metrics.items() if "Change" not in k}
-                metric_dict["Clustering epoch"] = args.clustering_epochs
                 run.log(metric_dict)
         else:
-            print(f"Warning: DBSCAN found only {n_test_clusters} cluster(s) on test set. Skipping evaluation (needs at least 2 clusters).")
-            print(f"Try adjusting --dbscan-eps (currently {args.dbscan_eps}) or --dbscan-min-samples (currently {args.dbscan_min_samples})")
+            print(f"Warning: DBSCAN found only {n_test_clusters} cluster(s) with eps={args.dbscan_eps}.")
+            print("Evaluation skipped. To fix this, try decreasing --dbscan-eps slightly (e.g., to 0.12).")
         
         ae.to("cpu")
         

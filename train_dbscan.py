@@ -1,5 +1,5 @@
 import argparse
-from argparse import Namespace # Added to fix the Args() TypeError
+from argparse import Namespace # Prevents Args() init error
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,8 +14,10 @@ import os
 from src.datasets.dataset_init import get_train_eval_test_dataloaders
 from src.deep import BRB_DEC, BRB_IDEC, BRB_DCN
 from src.training.utils import set_cuda_configuration
-# We keep this import in case other parts of the repo need the class definition
 from config.base_config import Args 
+
+# --- INTERNAL CONFIGURATION ---
+DATA_PATH = "./data" # Hardcoded path based on your repo structure
 
 # --- CLUSTERING ACCURACY (ACC) ---
 def cluster_acc(y_true, y_pred):
@@ -49,7 +51,6 @@ class DeepDBSCANWrapper(nn.Module):
 
 def apply_soft_reset(model, interpolation_factor):
     """BRB Mechanism: Perturbs weights."""
-    # Check if model is wrapped in DataParallel for multi-GPU
     target_model = model.module if isinstance(model, nn.DataParallel) else model
     for name, param in target_model.encoder.named_parameters():
         if 'weight' in name:
@@ -58,28 +59,26 @@ def apply_soft_reset(model, interpolation_factor):
 
 # --- EXPERIMENT ENGINE ---
 def run_experiment(args):
-    # FIX 1: Handle "all" GPU safely to avoid ValueError
+    # GPU FIX: Handle "all" safely
     if torch.cuda.is_available():
         if args.experiment_gpu != 'all':
-            # Only call the repo utility for specific IDs (0, 1, etc.)
             set_cuda_configuration(args.experiment_gpu) 
         device = torch.device("cuda")
         print(f"🚀 Using GPU(s). Count: {torch.cuda.device_count()}")
     else:
         device = torch.device("cpu")
 
-    # FIX 2: Use Namespace to avoid 'Args() missing 4 arguments' TypeError
-    # The dataloader typically only needs 'dataset' and 'batch_size' from this object.
+    # FIX: Using Namespace and hardcoded DATA_PATH
     repo_args = Namespace(
         dataset=args.dataset_name,
         batch_size=args.batch_size
     )
-    train_loader, _, _ = get_train_eval_test_dataloaders(repo_args)
+    
+    # Passing the hardcoded DATA_PATH to the dataloader
+    train_loader, _, _ = get_train_eval_test_dataloaders(repo_args, DATA_PATH)
 
-    # Auto-calculate periods
     num_periods = args.clustering_epochs // args.brb_reset_interval
     
-    # Model Selection
     if args.dc_algorithm == 'dec':
         base = BRB_DEC()
     elif args.dc_algorithm == 'idec':
@@ -90,7 +89,6 @@ def run_experiment(args):
     feature_dim = 128 
     model = DeepDBSCANWrapper(base, feature_dim).to(device)
     
-    # Multi-GPU support if "all" is requested
     if torch.cuda.device_count() > 1 and args.experiment_gpu == 'all':
         print(f"🔗 Multi-GPU Active: Training on {torch.cuda.device_count()} cards.")
         model = nn.DataParallel(model)
@@ -121,7 +119,6 @@ def run_experiment(args):
             print("Cluster collapse. Increase --dbscan-eps.")
             continue
 
-        # Update classifier head based on found clusters
         if isinstance(model, nn.DataParallel):
             model.module.update_head(new_k, feature_dim)
         else:
@@ -149,19 +146,14 @@ def run_experiment(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Parameters matching your requested style
     parser.add_argument('--dataset-name', type=str, default='mnist', dest='dataset_name')
     parser.add_argument('--experiment.gpu', type=str, default='all', dest='experiment_gpu')
     parser.add_argument('--dc-algorithm', type=str, default='dec', dest='dc_algorithm')
     parser.add_argument('--batch-size', type=int, default=256, dest='batch_size')
     parser.add_argument('--dc-optimizer.lr', type=float, default=0.001, dest='dc_optimizer_lr')
-    
-    # BRB logic parameters
     parser.add_argument('--clustering-epochs', type=int, default=100, dest='clustering_epochs')
     parser.add_argument('--brb.reset-interval', type=int, default=20, dest='brb_reset_interval')
     parser.add_argument('--brb.reset-interpolation-factor', type=float, default=0.8, dest='brb_reset_interpolation_factor')
-    
-    # DBSCAN clustering parameters
     parser.add_argument('--dbscan-eps', type=float, default=0.4, dest='dbscan_eps')
     parser.add_argument('--dbscan-min-samples', type=int, default=10, dest='dbscan_min_samples')
     

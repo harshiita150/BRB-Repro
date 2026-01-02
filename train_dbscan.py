@@ -296,95 +296,44 @@ def train_dbscan(args: Args) -> None:
             
             # Evaluate at end of period
             if Y_true is not None:
-                acc_all = cluster_acc_all(Y_true, dbscan_labels)
-                nmi = nmi_score(Y_true, dbscan_labels)
-                ari = ari_score(Y_true, dbscan_labels)
-                n_noise = np.sum(dbscan_labels == -1)
-                print(f">> Period {period+1} Result | ACC-All: {acc_all:.4f} | NMI: {nmi:.4f} | ARI: {ari:.4f} | K: {n_clusters_found} | Noise: {n_noise} pts")
-            else:
-                acc_all, acc_pure, ari, n_noise = 0.0, 0.0, 0.0, 0
-                print(f">> Period {period+1} Result | Found K: {n_clusters_found}")
+                    train_acc = cluster_acc_all(Y_true, dbscan_labels)
+                    train_nmi = nmi_score(Y_true, dbscan_labels)
+                    train_ari = ari_score(Y_true, dbscan_labels)
+                    n_noise = np.sum(dbscan_labels == -1)
+                    print(f">> Period {period+1} TRAIN | ACC: {train_acc:.4f} | NMI: {train_nmi:.4f} | ARI: {train_ari:.4f} | K: {n_clusters_found} | Noise: {int(n_noise)}")
+                
+                test_embeddings = encode_batchwise(test_dl, ae, device)
+                db_test = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(test_embeddings)
+                
+                test_pred = db_test.labels_
+                n_test_k = len(set(test_pred) - {-1})
+                
+                t_acc = cluster_acc_all(test_labels, test_pred)
+                t_nmi = nmi_score(test_labels, test_pred)
+                t_ari = ari_score(test_labels, test_pred)
+                
+                print(f">> Period {period+1} TEST  | ACC: {t_acc:.4f} | NMI: {t_nmi:.4f} | ARI: {t_ari:.4f} | K: {n_test_k}")
+                print("-" * 80)
+
+                # Log both to WandB
+                if run is not None:
+                    run.log({
+                        "Period": period + 1,
+                        "Train/ACC": train_acc if Y_true is not None else 0,
+                        "Train/ARI": train_ari if Y_true is not None else 0,
+                        "Test/ACC": t_acc,
+                        "Test/ARI": t_ari,
+                        "Test/N_Clusters": n_test_k
+                    })
 
             metrics_log.append({
                 'period': period + 1,
-                'acc_pure': acc_pure,
-                'acc_all': acc_all,
-                'ari': ari,
-                'n_clusters': n_clusters_found,
-                'n_noise': n_noise
+                'train_ari': train_ari if Y_true is not None else 0,
+                'test_ari': t_ari,
+                'test_acc': t_acc
             })
+            model.train()
         
-        # Final evaluation on test set
-        print("\n--- Running Final Test Set Evaluation ---")
-        model.eval()
-        test_embeddings = encode_batchwise(test_dl, ae, device)
-        
-        db_test = DBSCAN(eps=args.dbscan_eps, min_samples=args.dbscan_min_samples, n_jobs=-1).fit(test_embeddings)
-        n_test_clusters = len(set(db_test.labels_) - {-1})
-        
-        if n_test_clusters >= 2:
-            # Calculate centers for the evaluation function
-            cluster_centers = []
-            for cluster_id in set(db_test.labels_) - {-1}:
-                cluster_points = test_embeddings[db_test.labels_ == cluster_id]
-                cluster_centers.append(cluster_points.mean(axis=0))
-            cluster_centers = np.array(cluster_centers)
-
-            # Run deep evaluation (this calculates NMI, ARI, Accuracy, etc.)
-            metrics, _ = evaluate_deep_clustering(
-                cluster_centers=cluster_centers,
-                model=ae.to(device),
-                dataloader=test_dl,
-                labels=test_labels,
-                old_labels=None,
-                loss_fn=torch.nn.MSELoss(),
-                metrics_dict=None,
-                return_labels=False,
-                track_silhouette=True,
-                track_purity=True,
-                track_voronoi=False,         
-                track_uncertainty_plot=False,
-                device=device,
-            )
-            
-            # --- PRINT FINAL TEST RESULTS TO CONSOLE ---
-            print("\n" + "="*40)
-            print(f"FINAL TEST SET PERFORMANCE (K={n_test_clusters})")
-            print("-" * 40)
-            for metric_name, values in metrics.items():
-                if "Change" not in metric_name:
-                    # This will show Accuracy, NMI, ARI, and Purity
-                    print(f"{metric_name:25}: {values[-1]:.4f}")
-            print("="*40 + "\n")
-
-            if run is not None:
-                metric_dict = {f"Clustering test metrics/{k}": v[-1] for k, v in metrics.items() if "Change" not in k}
-                run.log(metric_dict)
-        else:
-            print(f"Warning: DBSCAN found only {n_test_clusters} cluster(s) with eps={args.dbscan_eps}.")
-            print("Evaluation skipped. To fix this, try decreasing --dbscan-eps slightly (e.g., to 0.12).")
-        
-        ae.to("cpu")
-        
-    else:
-        print("Deep Clustering is skipped")
-    
-    if args.save_clustering_model:
-        brb = "baseline"
-        if args.brb.reset_weights:
-            brb = "brb"
-        
-        torch.save(
-            {
-                "sd": ae.state_dict(),
-                "dbscan_labels": dbscan_labels if args.clustering_epochs > 0 else None,
-                "cluster_centers": cluster_centers if args.clustering_epochs > 0 else None,
-            },
-            f"{data_path}/clustering_models/dbscan_{args.dataset_name}_{brb}_{args.seed}.pth",
-        )
-    wandb.finish()
-
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
     train_dbscan(args)

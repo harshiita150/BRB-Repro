@@ -22,6 +22,7 @@
 </h2>
 
 [`Paper`](https://arxiv.org/abs/2411.02275)
+ | [**`Link to code`**](https://lightning.ai/aggarwalhar06/brb-repro/studios/brb-exp-replicate/code?source=copylink)
  | [**`Accepted at ICLR 2025`**](https://openreview.net/forum?id=r01fcKhzT5)
  | [`CIFAR10 Clustering`](https://paperswithcode.com/sota/image-clustering-on-cifar-10?p=breaking-the-reclustering-barrier-in-centroid)
  | [`CIFAR100-20 Clustering`](https://paperswithcode.com/sota/unsupervised-image-classification-on-cifar-20?p=breaking-the-reclustering-barrier-in-centroid)

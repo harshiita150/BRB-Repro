@@ -1,6 +1,6 @@
 <p align="center">
-    <a href="assets/BRB_method_overview.png">
-        <img src="assets/BRB_method_overview.png" alt="Results" width="70%"/>
+    <a href="assets/BRB_ABLATION_OVERVIEW.png">
+        <img src="assets/BRB_ABLATION_OVERVIEW.png" alt="Results" width="70%"/>
     </a>
 </p>
 
@@ -173,23 +173,23 @@ The downloader is flexible and can be configured in multiple ways:
 ## Results
 
 <p align="center">
-    <img src="assets/BRB_overall_results.png" alt="Results" width="50%"/>
+    <img src="assets/BRB_ABLATION2.png" alt="Results" width="50%"/>
 </p>
 
-### Autoencoder results
+### EM Integration
 
-Results for DEC and IDEC with and without BRB using a Feed Forward Autoencoder. The full results table can be found [here](assets/BRB_autoencoder_results.png).
+Results for DCN, DEC and IDEC with and without BRB using EM clustering algroithm in place of k-means for reclustering. The full results table can be found [here](assets/BRB_EM_RESULTS.png).
 
 <p align="center">
-    <img src="assets/BRB_DEC_IDEC_relative_improvement_spider.png" alt="AE Results" width="70%"/>
+    <img src="assets/BRB_ABLATION3.png" alt="AE Results" width="70%"/>
 </p>
 
-### Contrastive Learning
+### DBSCAN + BRB
 
-Results for DEC, IDEC, and DCN with and without BRB using a ResNet18 encoder.
+Results for DBSCAN with and without BRB, with reset only and with recluster only.
 
 <p align="center">
-    <img src="assets/BRB_contrastive_results_table.png" alt="AE Results" width="70%"/>
+    <img src="assets/BRB_ABLATION1.png" alt="AE Results" width="70%"/>
 </p>
 
 ## Acknowledgements
